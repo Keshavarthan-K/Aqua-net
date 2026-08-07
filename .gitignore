@@ -1,15 +1,8 @@
-# Python
+# Ignore large data files and virtual environments
 venv/
-.venv/
 __pycache__/
-*.pyc
-
-# VS Code
-.vscode/
-
-# Python environments
-env/
-
-# OS files
-.DS_Store
-Thumbs.db
+*.pt
+*.pth
+*.tif
+*.graphml
+.streamlit/secrets.toml

@@ -71,8 +71,8 @@ def get_dynamic_flood_geojson(rainfall_cm, duration_hr):
     
     # Safely clone the tensor to avoid memory warnings
     current_graph.x = graph_data.x.clone()
-    current_graph.x[:, 1] = rainfall_cm  
-    current_graph.x[:, 2] = duration_hr  
+    current_graph.x[:, 2] = rainfall_cm  
+    current_graph.x[:, 3] = duration_hr  
     
     with torch.no_grad():
         predictions = model(current_graph).squeeze().tolist()
