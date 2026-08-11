@@ -12,11 +12,8 @@ class AquaNet(torch.nn.Module):
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
         
-        # 🚀 THE FIX: Static Scaling!
-        # [Elev (50m), Slope (0.5), Rain (50cm), Time (24hr), Drain (1.0), Depress (5m), Road (1.0)]
+        # Static Scaling [Elev, Slope, Rain, Time, Drain, Depress, Road]
         scale_factors = torch.tensor([50.0, 0.5, 50.0, 24.0, 1.0, 5.0, 1.0], device=x.device)
-        
-        # We divide by the fixed maximums so the sliders are never erased!
         x_norm = x / scale_factors
         
         x = self.conv1(x_norm, edge_index)
@@ -43,10 +40,18 @@ if __name__ == "__main__":
         (10.0, 5.0),   # Steady Rain
         (5.0, 24.0),   # Long Drizzle
         (30.0, 10.0),  # Monsoon Downpour
-        (0.0, 1.0)
+        (0.0, 1.0)     # Sunny Day (Forces the Bias to 0)
     ]
     
-    print("\nTraining AI to understand gravity and fixed scales...")
+    # 🚀 PRE-COMPUTE GRAVITY FLOW DIRECTIONS
+    # Find all edges where water flows from a higher node to a lower node
+    elevations = data.x[:, 0]
+    src, dst = data.edge_index
+    flow_mask = elevations[src] > elevations[dst]
+    flow_src = src[flow_mask]
+    flow_dst = dst[flow_mask]
+    
+    print("\nTraining AI to learn spatial gravity flow...")
     for epoch in range(251):
         model.train()           
         optimizer.zero_grad()   
@@ -56,13 +61,24 @@ if __name__ == "__main__":
             data.x[:, 2] = sim_rain
             data.x[:, 3] = sim_time
             
-            intensity = sim_rain / sim_time
+            # Base rain falling on every node
+            base_intensity = sim_rain / sim_time if sim_time > 0 else 0.0
+            water_loads = torch.full((data.num_nodes,), base_intensity, dtype=torch.float32)
+            
+            # 🚀 SPATIAL GRAVITY SIMULATION (Vectorized)
+            # 20% of water flows from higher nodes down to lower nodes
+            runoff = water_loads[flow_src] * 0.20
+            
+            # Subtract runoff from the high nodes, add it to the low nodes
+            water_loads.scatter_add_(0, flow_src, -runoff)
+            water_loads.scatter_add_(0, flow_dst, runoff)
+            
             drainage_capacity = data.x[:, 4] * 3.5 
-            excess = torch.clamp(intensity - drainage_capacity, min=0.0)
+            excess = torch.clamp(water_loads - drainage_capacity, min=0.0)
             
             spatial_multiplier = 1.0 + (data.x[:, 5] * 0.5) 
-            
             ground_truth_y = ((excess * sim_time) / 100.0) * spatial_multiplier
+            
             data.y = ground_truth_y.unsqueeze(1)
             
             out = model(data)       
@@ -77,4 +93,4 @@ if __name__ == "__main__":
             print(f"Epoch {epoch:03d} | Combined Loss: {epoch_loss:.4f} | Sample Node Prediction: {sample_pred:.3f} m")
 
     torch.save(model.state_dict(), "aquanet_brain.pth")
-    print("\n7-Feature Physics AI saved as 'aquanet_brain.pth'!")
+    print("\nTrue Spatial AI saved as 'aquanet_brain.pth'!")
