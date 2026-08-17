@@ -7,7 +7,8 @@ class AquaNet(torch.nn.Module):
         super(AquaNet, self).__init__()
         self.conv1 = GCNConv(7, 16)
         self.conv2 = GCNConv(16, 8)
-        self.conv3 = GCNConv(8, 1)
+        # THE FIX 1: Remove the bias on the final layer so it can't hallucinate baseline water
+        self.conv3 = GCNConv(8, 1, bias=False)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -24,7 +25,8 @@ class AquaNet(torch.nn.Module):
         
         x = self.conv3(x, edge_index)
         
-        return F.softplus(x) 
+        # THE FIX 2: Use ReLU instead of Softplus for a strict, hard 0.0 floor
+        return torch.relu(x) 
 
 if __name__ == "__main__":
     print("Loading the 7-Feature Spatial Dataset...")
@@ -34,24 +36,25 @@ if __name__ == "__main__":
     criterion = torch.nn.MSELoss() 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01) 
     
+    # We repeat the Sunny Day twice in the curriculum to heavily enforce the zero-floor
     training_storms = [
         (40.0, 1.0),   # Flash Flood
         (20.0, 2.0),   # Heavy Rain
         (10.0, 5.0),   # Steady Rain
         (5.0, 24.0),   # Long Drizzle
         (30.0, 10.0),  # Monsoon Downpour
-        (0.0, 1.0)     # Sunny Day (Forces the Bias to 0)
+        (0.0, 1.0),    # Sunny Day
+        (0.0, 24.0)    # Sunny Day (Long duration)
     ]
     
-    # 🚀 PRE-COMPUTE GRAVITY FLOW DIRECTIONS
-    # Find all edges where water flows from a higher node to a lower node
+    # Pre-compute gravity flow directions
     elevations = data.x[:, 0]
     src, dst = data.edge_index
     flow_mask = elevations[src] > elevations[dst]
     flow_src = src[flow_mask]
     flow_dst = dst[flow_mask]
     
-    print("\nTraining AI to learn spatial gravity flow...")
+    print("\nTraining strict zero-boundary spatial AI...")
     for epoch in range(251):
         model.train()           
         optimizer.zero_grad()   
@@ -61,15 +64,11 @@ if __name__ == "__main__":
             data.x[:, 2] = sim_rain
             data.x[:, 3] = sim_time
             
-            # Base rain falling on every node
             base_intensity = sim_rain / sim_time if sim_time > 0 else 0.0
             water_loads = torch.full((data.num_nodes,), base_intensity, dtype=torch.float32)
             
-            # 🚀 SPATIAL GRAVITY SIMULATION (Vectorized)
-            # 20% of water flows from higher nodes down to lower nodes
+            # Spatial Gravity Simulation (Vectorized)
             runoff = water_loads[flow_src] * 0.20
-            
-            # Subtract runoff from the high nodes, add it to the low nodes
             water_loads.scatter_add_(0, flow_src, -runoff)
             water_loads.scatter_add_(0, flow_dst, runoff)
             
