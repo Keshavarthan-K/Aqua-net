@@ -6,6 +6,8 @@ import json
 import shapely.geometry
 from shapely.geometry import LineString
 from train import AquaNet
+import requests
+from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="AquaNet: AI Flood Engine")
 
@@ -69,7 +71,6 @@ def get_dynamic_flood_geojson(rainfall_cm, duration_hr):
     model, graph_data = load_ai_brain()
     current_graph = graph_data.clone()
     
-    # Safely clone the tensor to avoid memory warnings
     current_graph.x = graph_data.x.clone()
     current_graph.x[:, 2] = rainfall_cm  
     current_graph.x[:, 3] = duration_hr  
@@ -85,12 +86,16 @@ def get_dynamic_flood_geojson(rainfall_cm, duration_hr):
         if geom_data is None: continue
         src, dst, poly_mapping = geom_data
         
-        edge_depth_m = (predictions[src] + predictions[dst]) / 2.0
+        # 🚀 THE IRONCLAD CLAMP
+        if rainfall_cm <= 0.0:
+            edge_depth_m = 0.0
+        else:
+            edge_depth_m = (predictions[src] + predictions[dst]) / 2.0
         
         if edge_depth_m > max_depth:
             max_depth = edge_depth_m
             
-        if edge_depth_m > 0.05: # Only render water deeper than 5cm
+        if edge_depth_m > 0.05: 
             features.append({
                 "type": "Feature",
                 "geometry": poly_mapping,
@@ -170,7 +175,6 @@ def render_maplibre_3d(api_key, gnn_data):
                             0.5, '#0284c7',  
                             1.5, '#1e3a8a'   
                         ],
-                        // INCREASED MULTIPLIER: Exaggerate height by 30x so it is visible against buildings
                         'fill-extrusion-height': ['*', ['get', 'depth_m'], 30], 
                         'fill-extrusion-opacity': 0.90
                     }}
@@ -203,19 +207,52 @@ def render_maplibre_3d(api_key, gnn_data):
     """
     components.html(html_code, height=750)
 
-# --- 5. STREAMLIT UI ---
-st.title("🌊 AquaNet: AI Flood Prediction Engine")
+# --- 5. STREAMLIT UI WITH WEATHER API ---
+st.title("🌊 AquaNet: Autonomous Flood Prediction Engine")
 
-col1, col2 = st.columns(2)
-with col1:
-    rain_input = st.slider("Forecasted Rainfall (cm)", min_value=0.0, max_value=40.0, value=20.0, step=1.0)
-with col2:
-    time_input = st.slider("Storm Duration (hours)", min_value=1.0, max_value=24.0, value=2.0, step=1.0)
+# Mode Selection
+mode = st.radio("System Mode:", ["📡 Live Forecast (Chennai)", "🎛️ Manual Simulation"], horizontal=True)
 
-# Generate GeoJSON and capture the highest water level predicted
+if mode == "📡 Live Forecast (Chennai)":
+    with st.spinner("Connecting to Open-Meteo Satellite Data..."):
+        # API call for Chennai's coordinates
+        lat, lon = 13.0827, 80.2707
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=precipitation&timezone=Asia%2FKolkata&forecast_days=1"
+        
+        try:
+            response = requests.get(url).json()
+            
+            # Find the current hour in the local timezone
+            current_hour = datetime.now().hour
+            
+            # Aggregate the forecasted precipitation (mm) for the next 3 hours
+            rain_mm = sum(response['hourly']['precipitation'][current_hour:current_hour+3])
+            
+            # Convert mm to cm for the GNN
+            rain_input = float(rain_mm / 10.0)
+            time_input = 3.0 # Fixed 3-hour forecast window
+            
+            if rain_input > 0.0:
+                st.warning(f"🌧️ **Storm Detected!** Forecasting {rain_input:.2f} cm of rain over the next {time_input} hours.")
+            else:
+                st.success("☀️ **Clear Skies.** No rainfall forecasted for Chennai in the next 3 hours.")
+                
+        except Exception as e:
+            st.error("⚠️ Failed to reach the meteorological API. Defaulting to 0 cm.")
+            rain_input = 0.0
+            time_input = 3.0
+else:
+    # Fallback to Manual Sliders
+    col1, col2 = st.columns(2)
+    with col1:
+        rain_input = st.slider("Forecasted Rainfall (cm)", min_value=0.0, max_value=40.0, value=0.0, step=1.0)
+    with col2:
+        time_input = st.slider("Storm Duration (hours)", min_value=1.0, max_value=24.0, value=1.0, step=1.0)
+
+# Generate predictions based on chosen mode
 gnn_geojson, max_depth_m = get_dynamic_flood_geojson(rain_input, time_input)
 
-st.info(f"🧠 **GNN Physics Telemetry:** Processing {rain_input} cm of rain over {time_input} hours. The AI predicts a maximum street flood depth of **{max_depth_m:.2f} meters**.")
+st.info(f"🧠 **GNN Telemetry:** Evaluating {rain_input:.2f} cm of rain over {time_input} hours. Maximum calculated flood depth: **{max_depth_m:.2f} meters**.")
 
 # Render the Map
 render_maplibre_3d(maptiler_key, gnn_geojson)
